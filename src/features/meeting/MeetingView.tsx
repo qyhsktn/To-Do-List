@@ -76,6 +76,8 @@ export function MeetingView({ project, collaboration, online, onJumpToGantt }: M
   const [rightTab, setRightTab] = useState<"log" | "conflict">("log");
   /** 处理完成后自动跳甘特图的倒计时（秒）；null 表示不跳。 */
   const [jumpIn, setJumpIn] = useState<number | null>(null);
+  /** 本轮开始的时间。用来过滤掉上一轮的 websocket 事件，避免一进来就跳到冲突页。 */
+  const [runStartedAt, setRunStartedAt] = useState(0);
   const startedAtRef = useRef(0);
   const extractedRef = useRef(false);
   const jumpTimerRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
@@ -172,6 +174,13 @@ export function MeetingView({ project, collaboration, online, onJumpToGantt }: M
   const startProcessing = useCallback(async () => {
     setError("");
     setRun(undefined);
+    setRightTab("log");
+    setRunStartedAt(Date.now());
+    try {
+      sessionStorage.removeItem(`${LAST_RUN_KEY}.${projectId}`);
+    } catch {
+      // 忽略
+    }
     setRevealed(0);
     extractedRef.current = false;
     startedAtRef.current = Date.now();
@@ -184,7 +193,7 @@ export function MeetingView({ project, collaboration, online, onJumpToGantt }: M
       },
     ]);
     setPhase("transcribing");
-  }, []);
+  }, [projectId]);
 
   const runPipeline = useCallback(async () => {
     setPhase("running");
@@ -208,6 +217,13 @@ export function MeetingView({ project, collaboration, online, onJumpToGantt }: M
     setInputMode("minutes");
     setError("");
     setRun(undefined);
+    setRightTab("log");
+    setRunStartedAt(Date.now());
+    try {
+      sessionStorage.removeItem(`${LAST_RUN_KEY}.${projectId}`);
+    } catch {
+      // 忽略
+    }
     setRevealed(DEMO_TRANSCRIPT.length);
     setLocalEvents([
       {
@@ -299,18 +315,29 @@ export function MeetingView({ project, collaboration, online, onJumpToGantt }: M
 
   // 一旦出现冲突就切到第二页——包括还没跑完、只收到 ws 事件的时候。
   const liveHasConflict = collaboration.meetingEvents.some(
-    (event) => event.type === "conflict.found",
+    (event) =>
+      event.type === "conflict.found" && new Date(event.at).getTime() >= runStartedAt,
   );
   useEffect(() => {
     const hasConflict = (run !== undefined && run.conflictsBefore > 0) || liveHasConflict;
     if (hasConflict) setRightTab("conflict");
   }, [run, liveHasConflict]);
 
-  const conflictEvent = run?.events.find((event) => event.type === "conflict.found");
-  const planEvent = run?.events.find(
-    (event) => event.type === "plan.ready" && Array.isArray(event.detail?.plans),
+  // 冲突/方案优先取本轮结果；还没跑完时用 websocket 事件顶着，
+  // 这样切页的瞬间不会是一块空面板。
+  const liveEventsThisRun = collaboration.meetingEvents.filter(
+    (event) => new Date(event.at).getTime() >= runStartedAt,
   );
-  const appliedEvent = run?.events.find((event) => event.type === "plan.applied");
+  const conflictEvent =
+    run?.events.find((event) => event.type === "conflict.found") ??
+    [...liveEventsThisRun].reverse().find((event) => event.type === "conflict.found");
+  const planEvent =
+    run?.events.find(
+      (event) => event.type === "plan.ready" && Array.isArray(event.detail?.plans),
+    ) ?? [...liveEventsThisRun].reverse().find((event) => event.type === "plan.ready");
+  const appliedEvent =
+    run?.events.find((event) => event.type === "plan.applied") ??
+    [...liveEventsThisRun].reverse().find((event) => event.type === "plan.applied");
 
   const rawConflicts = (conflictEvent?.detail?.conflicts ?? []) as Array<
     Record<string, unknown>

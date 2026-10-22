@@ -116,6 +116,21 @@ export function createMeetingRouter(dependencies: V2RuntimeDependencies): Router
       });
 
       const trimmed = minutes?.trim() ?? "";
+      let clearedTasks = 0;
+      if (trimmed !== "") {
+        // 从纪要建排期 = 重建，不是往旧排期上叠加。
+        // 不先清空的话，同一场会跑两次就会出现两份一样的任务，冲突永远修不完。
+        clearedTasks = clearProjectSchedule(dependencies, projectId).removedTasks;
+        dependencies.publishMeetingEvent?.(projectId, {
+          type: "session.started",
+          at: new Date().toISOString(),
+          message:
+            clearedTasks > 0
+              ? `已清空原有排期（${clearedTasks} 个任务），按纪要重建`
+              : "当前排期为空，按纪要新建",
+        });
+      }
+
       const result =
         trimmed === ""
           ? await orchestrator.run()
@@ -129,6 +144,7 @@ export function createMeetingRouter(dependencies: V2RuntimeDependencies): Router
         conflictsBefore: result.conflictsBefore,
         conflictsAfter: result.conflictsAfter,
         appliedPlanId: result.appliedPlanId,
+        clearedTasks,
         undoAvailable: lastApplied.has(projectId),
         durationMs: result.durationMs,
         events: result.events,
